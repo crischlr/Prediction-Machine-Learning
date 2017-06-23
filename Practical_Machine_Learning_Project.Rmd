@@ -1,0 +1,205 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, cache = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Practical Machine Learning Project. 
+
+## Synopsis.
+  
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively.  
+
+These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.  
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.  
+
+More information is available from the website here:  [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).  
+
+
+## 1. Load Data.  
+
+The training data for this project are available here: 
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The test data are available here:  [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+The data for this project come from this source: 
+[http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har).  
+
+
+**NOTE:** You have to download the files (training and test) in a selected directory of your computer. Then, set that directory as the working directory in order to perform all the activities in this paper so that all the results are stored in that location.  
+Now, you can perform the analysis described in this report.  
+
+```{r check downloaded data}
+# Check the files has been correctly downloaded in the working directory
+list.files(pattern="pml-training.csv"); list.files(pattern="pml-testing.csv")
+
+```
+
+Once the data has been correctly downloaded we read the data into a table format taking into account all possible 'NA' values.    
+
+```{r read data}
+training <- read.csv("pml-training.csv", na.strings=c("NA", "", "#DIV/0!"))
+testing <- read.csv("pml-testing.csv", na.strings=c("NA", "", "#DIV/0!"))
+# Check dimension of both data sets.
+dim(training); dim(testing)
+```
+
+  
+## 2. Preprocess Data.   
+
+Once we have the data loaded we proceed with preprocessing of data:  
+
+### 2.1 Remove useless variables.  
+
+There are some variables which seems to be not useful for prediction purposes. These variables are related with the user name, dates and time windows.  
+
+```{r data preparation, message=FALSE, warning=FALSE}
+# Load all required libraries and set seed
+library(caret)
+library(randomForest)
+library(gbm)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+
+
+set.seed(1237)
+
+# Remove first 7 variables which are clearly not significant for the analysis
+trainClean1 <- training[,-c(1,2,3,4,5,6,7)]
+testClean1 <- testing[,-c(1,2,3,4,5,6,7)]
+
+```
+### 2.2 Remove zero covariates.  
+
+We remove variables with zero variance.  
+
+```{r remove zero covariates, cache=TRUE}
+# Remove zero/nearzero covariates
+nsv <- nearZeroVar(trainClean1, saveMetrics=TRUE)
+nsvTrue <- nsv[(nsv$nzv==TRUE & nsv$zeroVar==TRUE),]
+nearzeroVars <- row.names(nsvTrue)
+
+trainClean2 <- trainClean1[ , !names(trainClean1) %in% nearzeroVars]
+testClean2 <- testClean1[ , !names(testClean1) %in% nearzeroVars]
+```
+  
+### 2.3 Remove covariates with a high percentage of NAs.
+
+Finally, we need to treat the NAs. As there are a lot of variables with a high percentage of NAs, we prefer removing them instead of imputing data.  
+
+```{r remove covariates with high percentage of NAs}
+# Remove variables with a percentage of NAs > 70%
+NAs <- subset(trainClean2, select= (colSums(is.na(trainClean2)))/nrow(trainClean2) > 0.7)
+
+trainClean <- trainClean2[,!names(trainClean2) %in% names(NAs)]
+testClean <- testClean2[,!names(testClean2) %in% names(NAs)]
+
+dim(trainClean); dim(testClean)
+```
+
+## 3. Model Fit.
+  
+We first perform the corresponding partition of the training set in order to use cross validation for the analysis. 
+
+```{r analysis public health, message=FALSE, warning=FALSE}
+inTrain <- createDataPartition(y=trainClean$classe, p=0.6, list=FALSE)
+train <- trainClean[inTrain,]
+test <- trainClean[-inTrain,]
+```
+  
+  
+  
+### 3.1 Predictions with Classification Trees.    
+  
+We first apply Classification trees with cross validation (k-fold method, using 10 folds). Using cross validation we can avoid overfitting.
+  
+```{r classification trees}
+fitControl <- trainControl(method = "repeatedcv", 
+                           number = 10)
+fitClassTree <- train(classe ~ ., data = train, method = "rpart", 
+                      trControl = fitControl)
+print(fitClassTree)
+```
+
+
+
+```{r plot tree}
+fancyRpartPlot(fitClassTree$finalModel, sub = "Classification tree for classe")
+```
+
+Now, we check prediction in order to see out of sample error.  
+
+```{r predict classification tree}
+predClassTree <- predict(fitClassTree, test)
+confusionMatrix(predClassTree, test$classe)
+```
+
+The accuracy is really low: 0.5090 in the training set (using cross validation), and 0.4936 in the test set. 
+The out of sample error is 0.48.  
+
+A final visual check of the poor accuracy of this model.  
+
+```{r plot predictions classification tree}
+par(mfrow=c(1,2))
+barplot(table(predClassTree), col="steelblue", main="Prediction")
+barplot(table(test$classe), col="grey", main="Real Data (Test set)")
+```
+  
+### 3.2 Predictions with Boosting.  
+
+We make a second try on prediction with boosting in order to get a more accurate model.  
+In this case, as boosting is more advanced model and consumes more time, we will use the partitioning of the training set just to calculate the out of sample error.
+
+
+```{r boosting, message=FALSE, warning=FALSE, cache=TRUE}
+fitBoost <- train(classe ~ ., data=train, method="gbm", verbose=FALSE)
+fitBoost
+
+```
+  
+With this method, the accuracy is much higher, 0.9532, than the accuracy obtained with classification trees.
+
+Let's check how accurate is with the test test.  
+
+```{r predict boosting}
+predBoost <- predict(fitBoost, test)
+confusionMatrix(predBoost, test$classe)
+
+```
+  
+We check the accuracy in the test set is even higher than in the training set, 0.962.  
+
+The out of sample error is: 0.038.  
+
+We can check the accuracy of this model with these plots (just a visual check which of course matches with the Confusion Matrix).
+
+```{r plot predictions boosting}
+par(mfrow=c(1,2))
+barplot(table(predBoost), col="steelblue", main="Prediction")
+barplot(table(test$classe), col="grey", main="Real Data (Test set)")
+```
+
+
+## 4 Prediction with Testing set. 
+
+We finally choose the model fitted with Boosting, because it got a higher accuracy, in order to predict the 20 test cases reserved from the beginning, stored in 'testing'.  
+
+```{r prediction final model}
+predBoostFinal <- predict(fitBoost, testClean)
+predBoostFinal
+```
+
+We save these data in a csv file.  
+
+```{r save data}
+prediction <- cbind(seq(1:length(predBoostFinal)), as.character(predBoostFinal))
+write.csv(prediction, file = "Prediction.csv", row.names=FALSE)
+
+```
